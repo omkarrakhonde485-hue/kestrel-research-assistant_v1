@@ -1,0 +1,65 @@
+{
+  "evaluation": {
+    "total_questions": 15,
+    "successful_questions": 15,
+    "failed_questions": 0
+  },
+  "metrics": {
+    "retrieval_recall": 0.929,
+    "retrieval_precision": 0.246,
+    "citation_precision": 0.411,
+    "citation_recall": 0.583,
+    "answer_match": 0.507,
+    "unsupported_handled": 0.5
+  },
+  "breakdown_by_question_type": {
+    "single-hop": {
+      "retrieval_recall": 1.0,
+      "retrieval_precision": 0.289,
+      "citation_precision": 0.5,
+      "citation_recall": 0.625,
+      "answer_match": 0.675
+    },
+    "multi-hop": {
+      "retrieval_recall": 1.0,
+      "retrieval_precision": 0.328,
+      "citation_precision": 0.417,
+      "citation_recall": 0.417,
+      "answer_match": 0.361
+    },
+    "conflicting-evidence": {
+      "retrieval_recall": 0.5,
+      "retrieval_precision": 0.167,
+      "citation_precision": 0.0,
+      "citation_recall": 0.0,
+      "answer_match": 0.117
+    },
+    "unsupported": {
+      "citation_precision": 0.25,
+      "answer_match": 0.5,
+      "unsupported_handled": 0.5,
+      "retrieval_recall": 1.0,
+      "retrieval_precision": 0.143,
+      "citation_recall": 1.0
+    },
+    "follow-up": {
+      "retrieval_recall": 1.0,
+      "retrieval_precision": 0.167,
+      "citation_precision": 0.667,
+      "citation_recall": 1.0,
+      "answer_match": 0.741
+    }
+  },
+  "total_wall_clock_seconds": 371.084,
+  "total_latency_seconds": 371.074,
+  "models": {
+    "generation_model": "openai/gpt-oss-20b",
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2"
+  },
+  "notes": [
+    "Answer match is a lightweight lexical comparison against expected_answer.",
+    "Retrieval metrics use expected_chunk_ids as the evaluation reference.",
+    "Citation precision measures the fraction of cited chunks that match expected evidence.",
+    "LangSmith run URLs will be added in the observability integration step."
+  ]
+}

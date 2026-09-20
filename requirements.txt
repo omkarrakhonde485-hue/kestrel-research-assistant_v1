@@ -1,0 +1,16 @@
+langchain
+langchain-core
+langchain-groq
+langgraph
+
+chromadb
+sentence-transformers
+rank-bm25
+scikit-learn
+
+langsmith
+pydantic
+python-dotenv
+tenacity
+
+streamlit
