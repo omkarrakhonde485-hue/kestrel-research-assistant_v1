@@ -1,4 +1,7 @@
 import streamlit as st
+from src.retrieval.bootstrap import ensure_chroma_index
+
+ensure_chroma_index()
 
 from src.graph import build_graph
 
