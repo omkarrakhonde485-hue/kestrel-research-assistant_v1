@@ -1,6 +1,12 @@
 ````markdown
 # 🔎 Kestrel Research Assistant
 
+## 🚀 Live Demo
+
+**Streamlit App:** https://kestrel-research-assistantv1-euczcchqpj3zadpaw5u2wg.streamlit.app/
+
+> The application is deployed on Streamlit Community Cloud and automatically builds its local Chroma index from the supplied corpus on first startup.
+
 > **Retrieve first. Verify the evidence. Then answer.**
 
 A multi-agent research assistant for Kestrel Labs' internal documentation, built with LangGraph, hybrid retrieval, evidence verification, grounded synthesis, and source-level citations.
