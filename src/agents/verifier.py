@@ -13,6 +13,9 @@ ALLOWED_VERDICTS = {
     "insufficient_evidence",
 }
 
+MAX_CHUNK_TEXT_CHARS = 2500
+MAX_VERIFIER_ATTEMPTS = 2
+
 
 verifier_prompt = ChatPromptTemplate.from_messages(
     [
@@ -37,9 +40,6 @@ Rules:
 8. Consider document dates and versions when evaluating conflicts.
 9. Be conservative.
 10. Only report claims relevant to the user's question.
-11. Preserve exact numbers, dates, versions, limits, and identifiers from
-    the retrieved evidence.
-12. Keep claims concise so the complete output fits within the response limit.
 
 Allowed verdicts:
 
@@ -67,6 +67,7 @@ IMPORTANT:
 - Do not add explanations.
 - Do not add JSON.
 - Do not add numbering.
+- Always return at least one complete block.
 """,
         ),
         (
@@ -85,17 +86,76 @@ Retrieved evidence:
 )
 
 
+retry_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """
+You are a strict evidence verifier.
+
+Use ONLY the retrieved evidence.
+
+Return exactly ONE complete block in this format:
+
+CLAIM: <answer-relevant factual claim>
+VERDICT: <supported | partially_supported | conflicting_evidence | insufficient_evidence>
+CHUNKS: <one or more exact chunk IDs>
+
+Rules:
+- If two retrieved sources disagree, use conflicting_evidence.
+- If the evidence does not establish the answer, use insufficient_evidence.
+- Never invent facts or chunk IDs.
+- Return ONLY the three lines.
+""",
+        ),
+        (
+            "human",
+            """
+Question:
+{question}
+
+Evidence:
+{retrieved_evidence}
+""",
+        ),
+    ]
+)
+
+
 def _format_retrieved_evidence(chunks: list) -> str:
     formatted = []
 
     for chunk in chunks:
         metadata = chunk.get("metadata", {})
 
-        chunk_id = chunk.get("chunk_id", "unknown")
-        title = metadata.get("title", "Unknown document")
-        published = metadata.get("published", "unknown")
-        version = metadata.get("version", "unknown")
-        text = chunk.get("text", "")
+        chunk_id = chunk.get(
+            "chunk_id",
+            "unknown",
+        )
+
+        title = metadata.get(
+            "title",
+            "Unknown document",
+        )
+
+        published = metadata.get(
+            "published",
+            "unknown",
+        )
+
+        version = metadata.get(
+            "version",
+            "unknown",
+        )
+
+        text = chunk.get(
+            "text",
+            "",
+        )
+
+        if len(text) > MAX_CHUNK_TEXT_CHARS:
+            text = text[:MAX_CHUNK_TEXT_CHARS].rstrip()
+            text += "\n[truncated for verifier context]"
 
         formatted.append(
             "\n".join(
@@ -116,7 +176,7 @@ def _format_retrieved_evidence(chunks: list) -> str:
     return "\n\n---\n\n".join(formatted)
 
 
-def _normalise_verdict(value: str) -> str | None:
+def _normalise_verdict(value: str) -> str:
     verdict = (
         value.strip()
         .lower()
@@ -124,14 +184,14 @@ def _normalise_verdict(value: str) -> str | None:
         .replace("-", "_")
     )
 
-    if verdict in ALLOWED_VERDICTS:
-        return verdict
+    if verdict not in ALLOWED_VERDICTS:
+        return "insufficient_evidence"
 
-    return None
+    return verdict
 
 
 def _valid_chunk_ids(
-    chunk_ids: list,
+    raw_chunk_ids: list,
     retrieved_chunks: list,
 ) -> list:
     valid_ids = {
@@ -142,10 +202,10 @@ def _valid_chunk_ids(
 
     result = []
 
-    for chunk_id in chunk_ids:
+    for chunk_id in raw_chunk_ids:
         chunk_id = chunk_id.strip()
 
-        if chunk_id in valid_ids and chunk_id not in result:
+        if chunk_id and chunk_id in valid_ids:
             result.append(chunk_id)
 
     return result
@@ -155,6 +215,25 @@ def _parse_complete_blocks(
     text: str,
     retrieved_chunks: list,
 ) -> list:
+    text = text.strip()
+
+    text = re.sub(
+        r"```(?:text|markdown)?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = text.replace(
+        "```",
+        "",
+    ).strip()
+
+    text = text.replace(
+        "\r\n",
+        "\n",
+    )
+
     pattern = re.compile(
         r"""
         CLAIM:\s*(?P<claim>.*?)
@@ -171,28 +250,57 @@ def _parse_complete_blocks(
         re.IGNORECASE | re.VERBOSE | re.DOTALL,
     )
 
-    matches = list(pattern.finditer(text))
+    matches = list(
+        pattern.finditer(text)
+    )
+
+    print("\n[PARSER DEBUG]")
+    print(
+        f"Raw output length: {len(text)}"
+    )
+    print(
+        f"Matched blocks: {len(matches)}"
+    )
 
     claims = []
 
     for match in matches:
-        claim = match.group("claim").strip()
+        claim = match.group(
+            "claim"
+        ).strip()
 
         verdict = _normalise_verdict(
             match.group("verdict")
         )
 
-        raw_chunks = match.group("chunks").strip()
+        raw_chunks = match.group(
+            "chunks"
+        ).strip()
+
+        raw_chunk_ids = [
+            chunk.strip()
+            for chunk in raw_chunks.split(",")
+            if chunk.strip()
+        ]
 
         chunk_ids = _valid_chunk_ids(
-            raw_chunks.split(","),
+            raw_chunk_ids,
             retrieved_chunks,
         )
 
         if not claim:
             continue
 
-        if verdict is None:
+        # A supported / partial / conflict claim must point to
+        # actual retrieved evidence.
+        if (
+            verdict != "insufficient_evidence"
+            and not chunk_ids
+        ):
+            print(
+                "[PARSER WARNING] "
+                "Claim had no valid retrieved chunk IDs."
+            )
             continue
 
         claims.append(
@@ -206,79 +314,9 @@ def _parse_complete_blocks(
     return claims
 
 
-def _extract_chunk_ids_from_text(
-    text: str,
-    retrieved_chunks: list,
-) -> list:
-    """
-    Extract only chunk IDs that actually exist in retrieved evidence.
-
-    This prevents the fallback parser from inventing citations.
-    """
-
-    available_ids = [
-        chunk.get("chunk_id")
-        for chunk in retrieved_chunks
-        if chunk.get("chunk_id")
-    ]
-
-    found = []
-
-    for chunk_id in available_ids:
-        if re.search(
-            rf"(?<![\w:-]){re.escape(chunk_id)}(?![\w:-])",
-            text,
-        ):
-            found.append(chunk_id)
-
-    return found
-
-
-def _infer_verdict_from_text(
-    text: str,
-    retrieved_chunks: list,
-) -> str | None:
-    """
-    Infer a verdict only when the model explicitly mentions one.
-
-    This does not infer supported/conflicting status from arbitrary prose.
-    """
-
-    verdict_patterns = [
-        (
-            "conflicting_evidence",
-            r"\bconflicting(?:_|\s+)evidence\b",
-        ),
-        (
-            "partially_supported",
-            r"\bpartially(?:_|\s+)supported\b",
-        ),
-        (
-            "insufficient_evidence",
-            r"\binsufficient(?:_|\s+)evidence\b",
-        ),
-        (
-            "supported",
-            r"\bsupported\b",
-        ),
-    ]
-
-    lowered = text.lower()
-
-    for verdict, pattern in verdict_patterns:
-        if re.search(pattern, lowered):
-            return verdict
-
-    return None
-
-
 def _extract_fallback_claim(
     text: str,
 ) -> str:
-    """
-    Recover a truncated CLAIM line when the normal block parser fails.
-    """
-
     match = re.search(
         r"CLAIM:\s*(.+?)(?:\n|$)",
         text,
@@ -291,29 +329,55 @@ def _extract_fallback_claim(
     return match.group(1).strip()
 
 
+def _infer_explicit_verdict(
+    text: str,
+) -> str:
+    patterns = [
+        (
+            "conflicting_evidence",
+            r"\bconflicting[_ -]?evidence\b",
+        ),
+        (
+            "partially_supported",
+            r"\bpartially[_ -]?supported\b",
+        ),
+        (
+            "insufficient_evidence",
+            r"\binsufficient[_ -]?evidence\b",
+        ),
+        (
+            "supported",
+            r"\bsupported\b",
+        ),
+    ]
+
+    for verdict, pattern in patterns:
+        if re.search(
+            pattern,
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return verdict
+
+    return ""
+
+
 def _parse_verifier_output(
     raw_output: str,
     retrieved_chunks: list,
 ) -> list:
     """
-    Parse verifier output using strict blocks first.
+    Parse verifier output conservatively.
 
-    If the model output is truncated or malformed, use a conservative
-    fallback that can recover a claim only when the output itself contains
-    a claim and references only retrieved chunk IDs.
+    Strict parsing is attempted first. A fallback can recover a
+    truncated CLAIM line only when the model explicitly supplied
+    an allowed verdict and valid retrieved chunk IDs.
     """
 
     text = raw_output.strip()
 
-    text = re.sub(
-        r"```(?:text|markdown)?",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    text = text.replace("```", "").strip()
-    text = text.replace("\r\n", "\n")
+    if not text:
+        return []
 
     claims = _parse_complete_blocks(
         text,
@@ -321,43 +385,67 @@ def _parse_verifier_output(
     )
 
     if claims:
-        print("\n[PARSER DEBUG]")
-        print(f"Raw output length: {len(text)}")
-        print(f"Matched blocks: {len(claims)}")
-        print("Parser mode: strict")
-
+        print(
+            "[PARSER MODE] strict"
+        )
         return claims
 
-    print("\n[PARSER DEBUG]")
-    print(f"Raw output length: {len(text)}")
-    print("Matched blocks: 0")
-    print("Parser mode: fallback")
+    # Conservative fallback for malformed/truncated output.
+    claim = _extract_fallback_claim(
+        text
+    )
 
-    if not text:
+    verdict = _infer_explicit_verdict(
+        text
+    )
+
+    chunk_match = re.search(
+        r"CHUNKS:\s*(.+?)(?:\n|$)",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    raw_chunk_ids = []
+
+    if chunk_match:
+        raw_chunk_ids = [
+            chunk.strip()
+            for chunk in chunk_match.group(1).split(",")
+            if chunk.strip()
+        ]
+
+    chunk_ids = _valid_chunk_ids(
+        raw_chunk_ids,
+        retrieved_chunks,
+    )
+
+    if not verdict:
+        print(
+            "[PARSER MODE] fallback rejected: "
+            "no explicit verdict"
+        )
         return []
-
-    claim = _extract_fallback_claim(text)
 
     if not claim:
+        print(
+            "[PARSER MODE] fallback rejected: "
+            "no claim"
+        )
         return []
 
-    verdict = _infer_verdict_from_text(
-        text,
-        retrieved_chunks,
+    if (
+        verdict != "insufficient_evidence"
+        and not chunk_ids
+    ):
+        print(
+            "[PARSER MODE] fallback rejected: "
+            "no valid chunk IDs"
+        )
+        return []
+
+    print(
+        "[PARSER MODE] fallback"
     )
-
-    chunk_ids = _extract_chunk_ids_from_text(
-        text,
-        retrieved_chunks,
-    )
-
-    # A fallback claim without an explicit verdict or grounded chunks
-    # is not safe to pass downstream.
-    if verdict is None:
-        return []
-
-    if not chunk_ids and verdict != "insufficient_evidence":
-        return []
 
     return [
         {
@@ -402,12 +490,17 @@ def _attach_evidence_metadata(
     chunk_lookup = {}
 
     for chunk in retrieved_chunks:
-        chunk_id = chunk.get("chunk_id")
+        chunk_id = chunk.get(
+            "chunk_id"
+        )
 
         if not chunk_id:
             continue
 
-        metadata = chunk.get("metadata", {})
+        metadata = chunk.get(
+            "metadata",
+            {},
+        )
 
         chunk_lookup[chunk_id] = {
             "chunk_id": chunk_id,
@@ -448,47 +541,137 @@ def _attach_evidence_metadata(
     return enriched_claims
 
 
-def verifier_node(state: ResearchState) -> dict:
-    llm = get_llm()
+def _invoke_verifier(
+    chain,
+    question: str,
+    retrieved_evidence: str,
+    attempt: int,
+):
+    if attempt == 1:
+        response = chain.invoke(
+            {
+                "question": question,
+                "retrieved_evidence": retrieved_evidence,
+            }
+        )
+    else:
+        response = (
+            retry_prompt
+            | get_llm()
+        ).invoke(
+            {
+                "question": question,
+                "retrieved_evidence": retrieved_evidence,
+            }
+        )
 
-    chain = verifier_prompt | llm
+    content = getattr(
+        response,
+        "content",
+        "",
+    )
+
+    if isinstance(content, list):
+        content = "".join(
+            str(item)
+            for item in content
+        )
+
+    return str(content).strip()
+
+
+def verifier_node(
+    state: ResearchState,
+) -> dict:
 
     retrieved_chunks = state.get(
         "retrieved_chunks",
         [],
     )
 
-    retrieved_evidence = _format_retrieved_evidence(
-        retrieved_chunks
+    retrieved_evidence = (
+        _format_retrieved_evidence(
+            retrieved_chunks
+        )
     )
 
-    response = chain.invoke(
-        {
-            "question": state["question"],
-            "retrieved_evidence": retrieved_evidence,
-        }
+    question = state["question"]
+
+    verified_claims = []
+
+    for attempt in range(
+        1,
+        MAX_VERIFIER_ATTEMPTS + 1,
+    ):
+        print(
+            f"\n[VERIFIER ATTEMPT {attempt}/"
+            f"{MAX_VERIFIER_ATTEMPTS}]"
+        )
+
+        llm = get_llm()
+
+        chain = (
+            verifier_prompt
+            | llm
+        )
+
+        try:
+            raw_output = _invoke_verifier(
+                chain,
+                question,
+                retrieved_evidence,
+                attempt,
+            )
+        except Exception as exc:
+            print(
+                "[VERIFIER ERROR]"
+                f" attempt={attempt}: {exc}"
+            )
+
+            # Do not loop forever. If the first call fails,
+            # make exactly one retry.
+            if attempt < MAX_VERIFIER_ATTEMPTS:
+                continue
+
+            raw_output = ""
+
+        print(
+            "\n[VERIFIER RAW OUTPUT]"
+        )
+        print(raw_output)
+
+        verified_claims = (
+            _parse_verifier_output(
+                raw_output,
+                retrieved_chunks,
+            )
+        )
+
+        if verified_claims:
+            break
+
+        if attempt < MAX_VERIFIER_ATTEMPTS:
+            print(
+                "[VERIFIER RETRY] "
+                "No usable verifier claim was parsed."
+            )
+
+    verified_claims = (
+        _attach_evidence_metadata(
+            verified_claims,
+            retrieved_chunks,
+        )
     )
 
-    raw_output = response.content.strip()
-
-    print("\n[VERIFIER RAW OUTPUT]")
-    print(raw_output)
-
-    verified_claims = _parse_verifier_output(
-        raw_output,
-        retrieved_chunks,
+    overall_verdict = (
+        _calculate_overall_verdict(
+            verified_claims
+        )
     )
 
-    verified_claims = _attach_evidence_metadata(
-        verified_claims,
-        retrieved_chunks,
+    print(
+        "\n[VERIFIED CLAIMS]"
     )
-
-    overall_verdict = _calculate_overall_verdict(
-        verified_claims
-    )
-
-    print("\n[VERIFIED CLAIMS]")
 
     for claim in verified_claims:
         print(
@@ -510,7 +693,8 @@ def verifier_node(state: ResearchState) -> dict:
         print()
 
     print(
-        f"[OVERALL VERDICT] {overall_verdict}"
+        f"[OVERALL VERDICT] "
+        f"{overall_verdict}"
     )
 
     return {

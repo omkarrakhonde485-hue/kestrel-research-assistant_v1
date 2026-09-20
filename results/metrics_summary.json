@@ -7,37 +7,42 @@
   "metrics": {
     "retrieval_recall": 0.929,
     "retrieval_precision": 0.246,
-    "citation_precision": 0.411,
-    "citation_recall": 0.583,
-    "answer_match": 0.507,
-    "unsupported_handled": 0.5
+    "citation_precision": 0.472,
+    "citation_recall": 0.833,
+    "answer_match": 0.689,
+    "execution_error": 0.0,
+    "unsupported_handled": 1.0
   },
   "breakdown_by_question_type": {
     "single-hop": {
       "retrieval_recall": 1.0,
-      "retrieval_precision": 0.289,
-      "citation_precision": 0.5,
-      "citation_recall": 0.625,
-      "answer_match": 0.675
+      "retrieval_precision": 0.3,
+      "citation_precision": 0.517,
+      "citation_recall": 0.875,
+      "answer_match": 0.684,
+      "execution_error": 0.0
     },
     "multi-hop": {
       "retrieval_recall": 1.0,
       "retrieval_precision": 0.328,
-      "citation_precision": 0.417,
-      "citation_recall": 0.417,
-      "answer_match": 0.361
+      "citation_precision": 0.463,
+      "citation_recall": 0.792,
+      "answer_match": 0.713,
+      "execution_error": 0.0
     },
     "conflicting-evidence": {
       "retrieval_recall": 0.5,
-      "retrieval_precision": 0.167,
-      "citation_precision": 0.0,
-      "citation_recall": 0.0,
-      "answer_match": 0.117
+      "retrieval_precision": 0.143,
+      "citation_precision": 0.5,
+      "citation_recall": 0.5,
+      "answer_match": 0.32,
+      "execution_error": 0.0
     },
     "unsupported": {
       "citation_precision": 0.25,
-      "answer_match": 0.5,
-      "unsupported_handled": 0.5,
+      "answer_match": 1.0,
+      "unsupported_handled": 1.0,
+      "execution_error": 0.0,
       "retrieval_recall": 1.0,
       "retrieval_precision": 0.143,
       "citation_recall": 1.0
@@ -45,13 +50,14 @@
     "follow-up": {
       "retrieval_recall": 1.0,
       "retrieval_precision": 0.167,
-      "citation_precision": 0.667,
+      "citation_precision": 0.556,
       "citation_recall": 1.0,
-      "answer_match": 0.741
+      "answer_match": 0.704,
+      "execution_error": 0.0
     }
   },
-  "total_wall_clock_seconds": 371.084,
-  "total_latency_seconds": 371.074,
+  "total_wall_clock_seconds": 456.883,
+  "total_latency_seconds": 456.873,
   "models": {
     "generation_model": "openai/gpt-oss-20b",
     "embedding_model": "sentence-transformers/all-MiniLM-L6-v2"
@@ -60,6 +66,7 @@
     "Answer match is a lightweight lexical comparison against expected_answer.",
     "Retrieval metrics use expected_chunk_ids as the evaluation reference.",
     "Citation precision measures the fraction of cited chunks that match expected evidence.",
+    "Execution error is 1 for a failed graph execution and 0 for a successful execution.",
     "LangSmith run URLs will be added in the observability integration step."
   ]
 }

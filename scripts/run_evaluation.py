@@ -9,6 +9,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+
 from src.graph import build_graph
 from src.utils.llm import get_llm
 
@@ -273,11 +274,6 @@ def evaluate_answer(
 
     expected_answer = question_item.get(
         "expected_answer"
-    )
-
-    question_type = question_item.get(
-        "type",
-        "",
     )
 
     if expected_answer is None:
@@ -631,8 +627,14 @@ def run_evaluation():
                 )
             )
 
-            # Save current turn for follow-up
-            # questions.
+            # IMPORTANT:
+            # A successful graph execution must explicitly receive
+            # execution_error = 0. Otherwise aggregate_metrics()
+            # averages only failed records and reports 1.0 whenever
+            # all recorded failures have value 1.
+            output["scores"]["execution_error"] = 0
+
+            # Save current turn for follow-up questions.
             history.append(
                 {
                     "role": "user",
@@ -678,6 +680,7 @@ def run_evaluation():
                     3,
                 ),
                 "langsmith_run_url": None,
+                "error": str(e),
             }
 
         results.append(
@@ -739,11 +742,23 @@ def run_evaluation():
     successful_results = [
         result
         for result in results
-        if "execution_error"
-        not in result.get(
+        if result.get(
             "scores",
             {},
-        )
+        ).get(
+            "execution_error"
+        ) == 0
+    ]
+
+    failed_results = [
+        result
+        for result in results
+        if result.get(
+            "scores",
+            {},
+        ).get(
+            "execution_error"
+        ) == 1
     ]
 
     metrics_summary = {
@@ -754,9 +769,8 @@ def run_evaluation():
             "successful_questions": len(
                 successful_results
             ),
-            "failed_questions": (
-                len(questions)
-                - len(successful_results)
+            "failed_questions": len(
+                failed_results
             ),
         },
         "metrics": aggregate_metrics[
@@ -789,6 +803,8 @@ def run_evaluation():
             "as the evaluation reference.",
             "Citation precision measures the fraction "
             "of cited chunks that match expected evidence.",
+            "Execution error is 1 for a failed graph "
+            "execution and 0 for a successful execution.",
             "LangSmith run URLs will be added in the "
             "observability integration step.",
         ],
@@ -812,7 +828,7 @@ def run_evaluation():
     print("=" * 70)
 
     print(
-        f"Results written to:"
+        "Results written to:"
     )
 
     print(
